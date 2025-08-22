@@ -1,7 +1,9 @@
 # Load model directly
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from transformers.models.gpt_oss.modeling_gpt_oss import save_expert_log
+# from transformers.models.gpt_oss.modeling_gpt_oss import save_expert_log
+from transformers.models.gpt_oss.modeling_gpt_oss import EXPERT_LOG
 import torch
+import json
 
 tokenizer = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
 model = AutoModelForCausalLM.from_pretrained(
@@ -28,5 +30,7 @@ print(inputs)
 outputs = model.generate(**inputs, max_new_tokens=40)
 print(tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:]))
 
-save_expert_log("my_expert_activations.json")
+print(f"Collected {len(EXPERT_LOG)} expert activation records.")
+with open("my_expert_activations.json", "w") as f:
+    json.dump(EXPERT_LOG, f, indent=4)
 print("Expert activation log saved to my_expert_activations.json")
