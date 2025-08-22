@@ -151,6 +151,9 @@ class GptOssTopKRouter(nn.Module):
         return router_scores, router_indices
 
 
+EXPERT_LOG = []
+
+
 @use_kernel_forward_from_hub("MegaBlocksMoeMLP")
 class GptOssMLP(nn.Module):
     def __init__(self, config):
@@ -158,8 +161,18 @@ class GptOssMLP(nn.Module):
         self.router = GptOssTopKRouter(config)
         self.experts = GptOssExperts(config)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, layer_idx):
         router_scores, router_indices = self.router(hidden_states)  # (num_experts, seq_len)
+
+        # --- MODIFIED PART ---
+        # Convert tensor to a standard Python list and append to our log
+        log_entry = {
+            "layer": layer_idx,
+            "activated_experts": router_indices.cpu().tolist(),  # .cpu() is a good practice
+        }
+        EXPERT_LOG.append(log_entry)
+        # --- END MODIFIED PART ---
+
         routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores)
         return routed_out, router_scores
 
@@ -345,6 +358,7 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         self.input_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attention_type = config.layer_types[layer_idx]
+        self.layer_idx = layer_idx  # Add this line
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -376,7 +390,8 @@ class GptOssDecoderLayer(GradientCheckpointingLayer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, _ = self.mlp(hidden_states)  # diff with llama: router scores
+        # Pass the layer index to the mlp
+        hidden_states, _ = self.mlp(hidden_states, self.layer_idx)  # Modified this line
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -721,4 +736,5 @@ __all__ = [
     "GptOssForTokenClassification",
     "GptOssModel",
     "GptOssPreTrainedModel",
+    "save_expert_log",
 ]

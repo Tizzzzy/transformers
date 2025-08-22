@@ -471,16 +471,6 @@ class GptOssForSequenceClassification(MixtralForSequenceClassification):
 class GptOssForTokenClassification(MixtralForTokenClassification):
     pass
 
-
-__all__ = [
-    "GptOssForCausalLM",
-    "GptOssForSequenceClassification",
-    "GptOssForTokenClassification",
-    "GptOssModel",
-    "GptOssPreTrainedModel",
-]
-
-
 # --- ADD THIS FUNCTION AT THE VERY END OF THE FILE ---
 def save_expert_log(filepath="expert_log.json"):
     """Saves the collected expert activation data to a JSON file."""
@@ -488,3 +478,12 @@ def save_expert_log(filepath="expert_log.json"):
         json.dump(EXPERT_LOG, f, indent=4)
     # Optional: Clear the log after saving
     EXPERT_LOG.clear()
+
+__all__ = [
+    "GptOssForCausalLM",
+    "GptOssForSequenceClassification",
+    "GptOssForTokenClassification",
+    "GptOssModel",
+    "GptOssPreTrainedModel",
+    "save_expert_log",
+]
