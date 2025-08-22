@@ -50,6 +50,10 @@ from ..mixtral.modeling_mixtral import (
 from ..qwen2.modeling_qwen2 import Qwen2Attention
 from .configuration_gpt_oss import GptOssConfig
 
+import json
+from typing import Callable, Optional
+
+EXPERT_LOG = []
 
 logger = logging.get_logger(__name__)
 
@@ -157,8 +161,18 @@ class GptOssMLP(nn.Module):
         self.router = GptOssTopKRouter(config)
         self.experts = GptOssExperts(config)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, layer_idx):
         router_scores, router_indices = self.router(hidden_states)  # (num_experts, seq_len)
+
+        # --- MODIFIED PART ---
+        # Convert tensor to a standard Python list and append to our log
+        log_entry = {
+            "layer": layer_idx,
+            "activated_experts": router_indices.cpu().tolist() # .cpu() is a good practice
+        }
+        EXPERT_LOG.append(log_entry)
+        # --- END MODIFIED PART ---
+        
         routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores)
         return routed_out, router_scores
 
@@ -303,6 +317,7 @@ class GptOssDecoderLayer(LlamaDecoderLayer):
         self.input_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = GptOssRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attention_type = config.layer_types[layer_idx]
+        self.layer_idx = layer_idx # Add this line
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -334,7 +349,8 @@ class GptOssDecoderLayer(LlamaDecoderLayer):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, _ = self.mlp(hidden_states)  # diff with llama: router scores
+        # Pass the layer index to the mlp
+        hidden_states, _ = self.mlp(hidden_states, self.layer_idx)  # Modified this line
         hidden_states = residual + hidden_states
         return hidden_states
 
@@ -463,3 +479,12 @@ __all__ = [
     "GptOssModel",
     "GptOssPreTrainedModel",
 ]
+
+
+# --- ADD THIS FUNCTION AT THE VERY END OF THE FILE ---
+def save_expert_log(filepath="expert_log.json"):
+    """Saves the collected expert activation data to a JSON file."""
+    with open(filepath, "w") as f:
+        json.dump(EXPERT_LOG, f, indent=4)
+    # Optional: Clear the log after saving
+    EXPERT_LOG.clear()
