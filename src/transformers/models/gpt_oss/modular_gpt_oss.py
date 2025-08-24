@@ -54,6 +54,7 @@ import json
 from typing import Callable, Optional
 
 EXPERT_LOG = []
+EXPERT_OUTPUTS_LOG = []
 
 logger = logging.get_logger(__name__)
 
@@ -81,7 +82,7 @@ class GptOssExperts(nn.Module):
         self.alpha = 1.702
         self.limit = 7.0
 
-    def forward(self, hidden_states: torch.Tensor, router_indices=None, routing_weights=None) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, router_indices=None, routing_weights=None, layer_idx=None) -> torch.Tensor:
         """
         When training it is more efficient to just loop over the experts and compute the output for each expert
         as otherwise the memory would explode.
@@ -132,6 +133,16 @@ class GptOssExperts(nn.Module):
             next_states = next_states + self.down_proj_bias[..., None, :]
             next_states = next_states.view(num_experts, batch_size, -1, self.hidden_size)
             next_states = next_states * routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
+
+            # Log the weighted output of each expert before summing them up.
+            if layer_idx is not None:
+                log_entry = {
+                    "layer": layer_idx,
+                    # Detach from graph and move to CPU to save GPU memory
+                    "expert_hidden_states": next_states.detach().cpu() 
+                }
+                EXPERT_OUTPUTS_LOG.append(log_entry)
+            
             next_states = next_states.sum(dim=0)
         return next_states
 
@@ -173,7 +184,7 @@ class GptOssMLP(nn.Module):
         EXPERT_LOG.append(log_entry)
         # --- END MODIFIED PART ---
         
-        routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores)
+        routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores, layer_idx=layer_idx)
         return routed_out, router_scores
 
 
@@ -478,4 +489,5 @@ __all__ = [
     "GptOssModel",
     "GptOssPreTrainedModel",
     "EXPERT_LOG",
+    "EXPERT_OUTPUTS_LOG",
 ]
