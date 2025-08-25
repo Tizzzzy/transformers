@@ -132,28 +132,23 @@ class GptOssExperts(nn.Module):
             next_states = torch.bmm(((up + 1) * glu), self.down_proj)
             next_states = next_states + self.down_proj_bias[..., None, :]
             next_states = next_states.view(num_experts, batch_size, -1, self.hidden_size)
-            next_states = next_states * routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
 
-            # MODIFIED Log the weighted output of each expert before summing them up.
-            if layer_idx is not None and router_indices is not None:
-                # router_indices has shape (num_tokens, top_k)
-                # We need to reshape it to match batch and sequence dimensions
-                router_indices_reshaped = router_indices.view(batch_size, seq_len, -1)
+            # --- START MODIFIED PART ---
+            # Log the unweighted output of ALL experts before summing them up.
+            if layer_idx == 8:
+                # Detach the unweighted outputs from the computation graph before processing
+                all_expert_outputs = next_states.detach().cpu()
                 
-                # Detach tensors from the computation graph before processing
-                detached_outputs = next_states.detach().cpu()
-                
-                # This list will hold log entries for each token in the sequence
                 token_logs = []
                 for batch_idx in range(batch_size):
                     for seq_idx in range(seq_len):
                         token_pos = batch_idx * seq_len + seq_idx
-                        activated_expert_ids = router_indices[token_pos].cpu().tolist()
                         
                         expert_to_hidden_state = {}
-                        for expert_id in activated_expert_ids:
+                        # Iterate through ALL experts, not just the activated ones
+                        for expert_id in range(self.num_experts):
                             # Get the specific hidden state for this expert and token
-                            hidden_state_tensor = detached_outputs[expert_id, batch_idx, seq_idx, :]
+                            hidden_state_tensor = all_expert_outputs[expert_id, batch_idx, seq_idx, :]
                             # Convert tensor to list for JSON serialization
                             expert_to_hidden_state[expert_id] = hidden_state_tensor.tolist()
                         
@@ -166,7 +161,8 @@ class GptOssExperts(nn.Module):
                     "layer": layer_idx,
                     "tokens": token_logs
                 })
-            
+
+            next_states = next_states * routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
             next_states = next_states.sum(dim=0)
         return next_states
 
