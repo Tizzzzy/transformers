@@ -64,6 +64,9 @@ class GptOssRMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
+EXPERT_LOG = []
+
+
 class GptOssExperts(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -78,7 +81,9 @@ class GptOssExperts(nn.Module):
         self.alpha = 1.702
         self.limit = 7.0
 
-    def forward(self, hidden_states: torch.Tensor, router_indices=None, routing_weights=None) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, router_indices=None, routing_weights=None, layer_idx=None
+    ) -> torch.Tensor:
         """
         When training it is more efficient to just loop over the experts and compute the output for each expert
         as otherwise the memory would explode.
@@ -92,8 +97,9 @@ class GptOssExperts(nn.Module):
         Returns:
             torch.Tensor
         """
-        batch_size = hidden_states.shape[0]
+        batch_size, seq_len, _ = hidden_states.shape
         hidden_states = hidden_states.reshape(-1, self.hidden_size)  # (num_tokens, hidden_size)
+        num_tokens = hidden_states.shape[0]
         num_experts = routing_weights.shape[1]
         if self.training:
             next_states = torch.zeros_like(hidden_states, dtype=hidden_states.dtype, device=hidden_states.device)
@@ -129,6 +135,34 @@ class GptOssExperts(nn.Module):
             next_states = next_states + self.down_proj_bias[..., None, :]
             next_states = next_states.view(num_experts, batch_size, -1, self.hidden_size)
             next_states = next_states * routing_weights.transpose(0, 1).view(num_experts, batch_size, -1)[..., None]
+
+            # MODIFIED Log the weighted output of each expert before summing them up.
+            if layer_idx is not None and router_indices is not None:
+                # router_indices has shape (num_tokens, top_k)
+                # We need to reshape it to match batch and sequence dimensions
+                router_indices_reshaped = router_indices.view(batch_size, seq_len, -1)
+
+                # Detach tensors from the computation graph before processing
+                detached_outputs = next_states.detach().cpu()
+
+                # This list will hold log entries for each token in the sequence
+                token_logs = []
+                for batch_idx in range(batch_size):
+                    for seq_idx in range(seq_len):
+                        token_pos = batch_idx * seq_len + seq_idx
+                        activated_expert_ids = router_indices[token_pos].cpu().tolist()
+
+                        expert_to_hidden_state = {}
+                        for expert_id in activated_expert_ids:
+                            # Get the specific hidden state for this expert and token
+                            hidden_state_tensor = detached_outputs[expert_id, batch_idx, seq_idx, :]
+                            # Convert tensor to list for JSON serialization
+                            expert_to_hidden_state[expert_id] = hidden_state_tensor.tolist()
+
+                        token_logs.append({"token_position": token_pos, "experts": expert_to_hidden_state})
+
+                EXPERT_LOG.append({"layer": layer_idx, "tokens": token_logs})
+
             next_states = next_states.sum(dim=0)
         return next_states
 
@@ -151,9 +185,6 @@ class GptOssTopKRouter(nn.Module):
         return router_scores, router_indices
 
 
-EXPERT_LOG = []
-
-
 @use_kernel_forward_from_hub("MegaBlocksMoeMLP")
 class GptOssMLP(nn.Module):
     def __init__(self, config):
@@ -166,14 +197,16 @@ class GptOssMLP(nn.Module):
 
         # --- MODIFIED PART ---
         # Convert tensor to a standard Python list and append to our log
-        log_entry = {
-            "layer": layer_idx,
-            "activated_experts": router_indices.cpu().tolist(),  # .cpu() is a good practice
-        }
-        EXPERT_LOG.append(log_entry)
+        # log_entry = {
+        #     "layer": layer_idx,
+        #     "activated_experts": router_indices.cpu().tolist() # .cpu() is a good practice
+        # }
+        # EXPERT_LOG.append(log_entry)
         # --- END MODIFIED PART ---
 
-        routed_out = self.experts(hidden_states, router_indices=router_indices, routing_weights=router_scores)
+        routed_out = self.experts(
+            hidden_states, router_indices=router_indices, routing_weights=router_scores, layer_idx=layer_idx
+        )
         return routed_out, router_scores
 
 
